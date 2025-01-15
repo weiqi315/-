@@ -1,0 +1,120 @@
+Nuyoah:
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+# 定义一些常量
+INPUT_SIZE = 128  # 输入特征维度
+HIDDEN_SIZE = 128  # 隐藏层维度
+NUM_LAYERS = 3  # LSTM层数
+OUTPUT_SIZE = 10  # 输出类别数
+BATCH_SIZE = 32  # 批量大小
+SEQ_LENGTH = 50  # 序列长度
+
+# 定义编码器
+class Encoder(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super(Encoder, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bilstm = nn.LSTM(input_size, hidden_size, num_layers, bidirectional=True)
+
+    def forward(self, input, lengths):
+        packed_input = pack_padded_sequence(input, lengths, enforce_sorted=False)
+        output, (hidden, cell) = self.bilstm(packed_input)
+        output, _ = pad_packed_sequence(output)
+        hidden = torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1)
+        return output, hidden, cell
+
+# 定义注意力机制
+class Attention(nn.Module):
+    def __init__(self, hidden_size):
+        super(Attention, self).__init__()
+        self.attn = nn.Linear(hidden_size * 2, hidden_size)
+        self.v = nn.Parameter(torch.rand(hidden_size))
+
+    def forward(self, hidden, encoder_outputs):
+        batch_size = encoder_outputs.size(0)
+        src_len = encoder_outputs.size(1)
+        hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)
+        encoder_outputs = encoder_outputs.permute(1, 0, 2)
+        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
+        energy = energy.permute(1, 0, 2)
+        v = self.v.repeat(batch_size, 1).unsqueeze(1)
+        attention = torch.bmm(v, energy).squeeze(1)
+        return nn.functional.softmax(attention, dim=1)
+
+Nuyoah:
+# 定义解码器
+class Decoder(nn.Module):
+    def __init__(self, hidden_size, output_size, num_layers):
+        super(Decoder, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(hidden_size * 2, hidden_size, num_layers)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, input, hidden, cell, encoder_outputs, attention_weights):
+        context = torch.bmm(attention_weights.unsqueeze(1), encoder_outputs.permute(0, 2, 1)).squeeze(1)
+        input = torch.cat((input, context), dim=1)
+        output, (hidden, cell) = self.lstm(input.unsqueeze(0), (hidden.unsqueeze(0), cell.unsqueeze(0)))
+        output = self.fc(output.squeeze(0))
+        return output, hidden.squeeze(0), cell.squeeze(0)
+
+# 初始化模型
+encoder = Encoder(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS)
+attention = Attention(HIDDEN_SIZE)
+decoder = Decoder(HIDDEN_SIZE, OUTPUT_SIZE, NUM_LAYERS)
+
+# 定义优化器
+optimizer = optim.Adam(list(encoder.parameters()) + list(attention.parameters()) + list(decoder.parameters()), lr=0.001)
+
+# 定义损失函数
+criterion = nn.CrossEntropyLoss()
+
+# 生成模拟数据
+def generate_dummy_data(batch_size, seq_length, input_size, output_size):
+    input_data = torch.randn(batch_size, seq_length, input_size)
+    target_data = torch.randint(0, output_size, (batch_size, seq_length))
+    lengths = torch.full((batch_size,), seq_length, dtype=torch.long)
+    return input_data, target_data, lengths
+
+Nuyoah:
+# 训练函数
+def train(input_tensor, target_tensor, lengths, encoder, decoder, attention, optimizer, criterion):
+    optimizer.zero_grad()
+    
+    # 编码器前向传播
+    encoder_outputs, hidden, cell = encoder(input_tensor, lengths)
+    
+    # 初始化解码器输入
+    decoder_input = torch.zeros(batch_size, INPUT_SIZE)  # 假设输入维度与编码器相同
+    decoder_hidden = hidden
+    decoder_cell = cell
+    
+    # 解码器前向传播
+    loss = 0
+    for di in range(SEQ_LENGTH):
+        attention_weights = attention(decoder_hidden, encoder_outputs)
+        decoder_output, decoder_hidden, decoder_cell = decoder(
+            decoder_input, decoder_hidden, decoder_cell, encoder_outputs, attention_weights)
+        
+        # 计算损失
+        loss += criterion(decoder_output, target_tensor[:, di])
+        
+        # 下一个输入是当前输出
+        decoder_input = decoder_output.detach()
+
+    # 反向传播和优化
+    loss.backward()
+    optimizer.step()
+    
+    return loss.item() / SEQ_LENGTH
+
+Nuyoah:
+# 训练模型
+for epoch in range(10):  # 假设训练10个epoch
+    input_data, target_data, lengths = generate_dummy_data(BATCH_SIZE, SEQ_LENGTH, INPUT_SIZE, OUTPUT_SIZE)
+    loss = train(input_data, target_data, lengths, encoder, decoder, attention, optimizer, criterion)
+    print(f'Epoch {epoch+1}, Loss: {loss}')
